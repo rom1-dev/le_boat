@@ -3,6 +3,7 @@ from discord.ext import commands
 import os
 from dotenv import load_dotenv
 import random
+import api
 
 # Charge les variables d'environnement depuis le fichier .env
 load_dotenv()
@@ -19,6 +20,7 @@ IGNORED_CHANNELS = [
     "690562112795312198",
     "1389951627787768020"
 ]
+SUGGESTIONS_CHANNEL_ID = "1565418572715524286"
 
 # Définit le préfixe des commandes (par exemple, "!ping" pour appeler la commande "ping")
 bot = commands.Bot(command_prefix="!", intents=intents)
@@ -241,6 +243,119 @@ async def suggestion(ctx, *, suggestion_text: str):
         await ctx.send("Veuillez fournir une suggestion.")
     else:
         await ctx.send(f"Merci pour votre suggestion : `{suggestion_text}`\nNous l'examinerons bientôt !")
+        try:
+                # Récupère le salon par son ID
+                # bot.get_channel est rapide mais ne trouve que les salons en cache.
+                # bot.fetch_channel ferait une requête API mais est plus lent.
+                # Pour une commande admin, get_channel est souvent suffisant ou on peut le combiner.
+                target_channel = bot.get_channel(SUGGESTIONS_CHANNEL_ID)
+        
+                if not target_channel:
+                    # Tente de fetch le canal s'il n'est pas en cache
+                    target_channel = await bot.fetch_channel(SUGGESTIONS_CHANNEL_ID)
+                    
+                if not target_channel:
+                    return
+        
+                # Vérifie que c'est un salon textuel
+                if not isinstance(target_channel, discord.TextChannel):
+                    return
+
+                # Crée un embed propre pour présenter la suggestion
+                embed = discord.Embed(
+                    title="💡 Nouvelle suggestion",
+                    description=suggestion_text,
+                    color=discord.Color.blurple()
+                )
+                embed.set_author(name=str(ctx.author), icon_url=ctx.author.avatar.url if ctx.author.avatar else ctx.author.default_avatar.url)
+                embed.set_footer(text=f"ID de l'utilisateur : {ctx.author.id}")
+
+                # Envoie l'embed dans le salon cible
+                sent_message = await target_channel.send(embed=embed)
+                
+                # Optionnel : Ajoute des réactions pour permettre aux membres de voter (Pouce vert / Pouce rouge)
+                await sent_message.add_reaction("👍")
+                await sent_message.add_reaction("👎")
+
+        except Exception as e:
+            # En production, il est préférable d'afficher l'erreur dans la console pour le debug : print(e)
+            pass
+
+# --- fonctionnalités api ---
+@bot.command(name="stat")
+async def stat(ctx, joueur: str, categorie: str, statistique: str):
+    """Affiche une statistique précise d'un joueur Minecraft.
+    Usage : !mstat <joueur> <categorie> <statistique>
+    Exemple : !mstat NitneuKing custom play_time"""
+    
+    # Optionnel : Indiquer que le bot traite la demande (utile si l'API met une seconde à répondre)
+    async with ctx.typing():
+        # Appel de la fonction de votre module
+        valeur_brute = api.get_player_stat(joueur, categorie, statistique)
+
+    if valeur_brute is not None:
+        valeur_formatee = api.formater_nombre(valeur_brute)
+        if valeur_formatee[1]:
+            valeur_formatee = f"{valeur_formatee[0]} {valeur_formatee[1]}"
+        else:
+            valeur_formatee=valeur_formatee[0]
+        await ctx.send(f"📊 **{joueur}** -> `{categorie}/{statistique}` : **{valeur_formatee}**")
+    else:
+        await ctx.send(f"❌ Impossible de trouver des données pour **{joueur}** avec cette statistique.")
+
+@bot.command(name="top")
+async def top_stats(ctx, category: str, stat: str, *args):
+    """
+    Affiche le classement d'une statistique.
+    Usage : !top <categorie> <statistique> [limit:X] [asc/desc] [ignorebots] [ignoreunknown]
+    Exemple : !top custom deaths limit:5 asc ignoreunknown
+    """
+    # Valeurs par défaut
+    limit = 3
+    order = "desc"
+    ignore_bots = True
+    ignore_unknown = True
+
+    # Analyse des arguments optionnels (peu importe l'ordre)
+    for arg in args:
+        arg_lower = arg.lower()
+        if arg_lower.startswith("limit:"):
+            try:
+                limit = int(arg_lower.split(":")[1])
+            except ValueError:
+                pass
+        elif arg_lower.isdigit():
+            limit = int(arg_lower)
+        elif arg_lower in ["asc", "desc"]:
+            order = arg_lower
+        elif arg_lower == "bots":
+            ignore_bots = False
+        elif arg_lower == "inconnus":
+            ignore_unknown = False
+
+    async with ctx.typing():
+        # Appel de la fonction du module avec les paramètres dynamiques
+        players, unit = api.get_stats_ranking(
+            category, stat, limit=limit, order=order, 
+            ignore_bots=ignore_bots, ignore_unknown=ignore_unknown
+        )
+
+    if players:
+        description = f"Classement pour **{category}/{stat}**\n*(Ordre : `{order}` | Limite : `{limit}` | Bots ignorés : `{ignore_bots}` | Inconnus ignorés : `{ignore_unknown}`)*\n\n"
+        
+        for p in players:
+            valeur_formatee = api.formater_nombre(p["value"])
+            unit_str = f" {unit}" if unit else ""
+            description += f"**#{p['rank']}** - {p.get('name', 'Joueur Inconnu...')} : `{valeur_formatee}{unit_str}`\n"
+
+        embed = discord.Embed(
+            title="🏆 Classement Minecraft",
+            description=description,
+            color=discord.Color.gold()
+        )
+        await ctx.send(embed=embed)
+    else:
+        await ctx.send(f"❌ Impossible de récupérer le classement pour **{category}/{stat}**.")
 
 # Commande pour afficher les informations du bot
 @bot.command(name="info")
