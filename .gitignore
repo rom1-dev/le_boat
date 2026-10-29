@@ -1,0 +1,3 @@
+_local_*
+tests.py
+.env
